@@ -66,7 +66,7 @@ app.post('/api/folders', authenticate, async (req: AuthRequest, res) => {
 
 app.delete('/api/folders/:id', authenticate, async (req: AuthRequest, res) => {
   const id = parseInt(req.params.id)
-  await prisma.note.updateMany({ where: { folderId: id }, data: { folderId: null } })
+  await prisma.note.updateMany({ where: { folderId: id, userId: req.userId }, data: { folderId: null } })
   await prisma.folder.delete({ where: { id } })
   res.json({ ok: true })
 })
@@ -92,9 +92,19 @@ app.delete('/api/tags/:id', authenticate, async (req: AuthRequest, res) => {
 // ─── Notes ───
 app.get('/api/notes', authenticate, async (req: AuthRequest, res) => {
   const notes = await prisma.note.findMany({
-    where: { userId: req.userId },
+    where: { userId: req.userId, deletedAt: null },
     include: { tags: true },
     orderBy: [{ pinned: 'desc' }, { updatedAt: 'desc' }],
+  })
+  res.json(notes)
+})
+
+// 回收站（必须在 :id 路由之前）
+app.get('/api/notes/trash', authenticate, async (req: AuthRequest, res) => {
+  const notes = await prisma.note.findMany({
+    where: { userId: req.userId, deletedAt: { not: null } },
+    include: { tags: true },
+    orderBy: { deletedAt: 'desc' },
   })
   res.json(notes)
 })
@@ -111,7 +121,34 @@ app.patch('/api/notes/:id', authenticate, async (req: AuthRequest, res) => {
   const id = parseInt(req.params.id)
   const note = await prisma.note.findFirst({ where: { id, userId: req.userId } })
   if (!note) return res.status(404).json({ error: '笔记不存在' })
-  const updated = await prisma.note.update({ where: { id }, data: req.body, include: { tags: true } })
+
+  // 字段白名单
+  const allowed = ['title', 'content', 'pinned', 'folderId']
+  const data: any = {}
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) data[key] = req.body[key]
+  }
+
+  // 保存版本快照（内容或标题变化时）
+  if (data.content !== undefined || data.title !== undefined) {
+    await prisma.noteVersion.create({
+      data: { noteId: id, title: note.title, content: note.content },
+    })
+    // 限制每篇笔记最多 50 个版本
+    const versionCount = await prisma.noteVersion.count({ where: { noteId: id } })
+    if (versionCount > 50) {
+      const oldest = await prisma.noteVersion.findMany({
+        where: { noteId: id },
+        orderBy: { createdAt: 'asc' },
+        take: versionCount - 50,
+      })
+      await prisma.noteVersion.deleteMany({
+        where: { id: { in: oldest.map(v => v.id) } },
+      })
+    }
+  }
+
+  const updated = await prisma.note.update({ where: { id }, data, include: { tags: true } })
   res.json(updated)
 })
 
@@ -126,10 +163,45 @@ app.put('/api/notes/:id/tags', authenticate, async (req: AuthRequest, res) => {
   res.json(updated)
 })
 
+// 软删除
 app.delete('/api/notes/:id', authenticate, async (req: AuthRequest, res) => {
   const id = parseInt(req.params.id)
+  await prisma.note.update({ where: { id }, data: { deletedAt: new Date() } })
+  res.json({ ok: true })
+})
+
+// ─── 回收站 ───
+app.post('/api/notes/:id/restore', authenticate, async (req: AuthRequest, res) => {
+  const id = parseInt(req.params.id)
+  const note = await prisma.note.findFirst({ where: { id, userId: req.userId } })
+  if (!note) return res.status(404).json({ error: '笔记不存在' })
+  const updated = await prisma.note.update({
+    where: { id },
+    data: { deletedAt: null },
+    include: { tags: true },
+  })
+  res.json(updated)
+})
+
+app.delete('/api/notes/:id/permanent', authenticate, async (req: AuthRequest, res) => {
+  const id = parseInt(req.params.id)
+  const note = await prisma.note.findFirst({ where: { id, userId: req.userId } })
+  if (!note) return res.status(404).json({ error: '笔记不存在' })
   await prisma.note.delete({ where: { id } })
   res.json({ ok: true })
+})
+
+// ─── 版本历史 ───
+app.get('/api/notes/:id/versions', authenticate, async (req: AuthRequest, res) => {
+  const id = parseInt(req.params.id)
+  const note = await prisma.note.findFirst({ where: { id, userId: req.userId } })
+  if (!note) return res.status(404).json({ error: '笔记不存在' })
+  const versions = await prisma.noteVersion.findMany({
+    where: { noteId: id },
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+  })
+  res.json(versions)
 })
 
 app.listen(PORT, () => console.log(`  ✓ API 服务运行中: http://localhost:${PORT}`))
