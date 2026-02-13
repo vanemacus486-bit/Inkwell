@@ -5,10 +5,54 @@ import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
 import Link from '@tiptap/extension-link'
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight'
+import Image from '@tiptap/extension-image'
+import { Node, mergeAttributes } from '@tiptap/core'
 import { common, createLowlight } from 'lowlight'
 import { useEffect, useRef, useCallback, useState } from 'react'
+import { api } from './api'
 
 const lowlight = createLowlight(common)
+
+// 自定义视频节点
+const Video = Node.create({
+  name: 'video',
+  group: 'block',
+  atom: true,
+  addAttributes() {
+    return {
+      src: { default: null },
+      controls: { default: true },
+    }
+  },
+  parseHTML() { return [{ tag: 'video' }] },
+  renderHTML({ HTMLAttributes }) {
+    return ['video', mergeAttributes(HTMLAttributes, { controls: 'true', style: 'max-width: 100%; border-radius: 8px; margin: 0.8em 0;' })]
+  },
+})
+
+async function uploadAndInsert(editor: any, file: File, type: 'image' | 'video') {
+  try {
+    const { url } = await api.upload(file)
+    if (type === 'image') {
+      editor.chain().focus().setImage({ src: url }).run()
+    } else {
+      editor.chain().focus().insertContent({ type: 'video', attrs: { src: url } }).run()
+    }
+  } catch (e) {
+    console.error('上传失败:', e)
+  }
+}
+
+function triggerFileUpload(editor: any, accept: string, type: 'image' | 'video') {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = accept
+  input.onchange = async () => {
+    const file = input.files?.[0]
+    if (file) await uploadAndInsert(editor, file, type)
+  }
+  input.click()
+}
 
 const SLASH_COMMANDS = [
   { icon: 'H₁', label: '标题 1', desc: '大标题', action: (editor: any) => editor.chain().focus().toggleHeading({ level: 1 }).run() },
@@ -20,6 +64,8 @@ const SLASH_COMMANDS = [
   { icon: '❝', label: '引用', desc: '块引用', action: (editor: any) => editor.chain().focus().toggleBlockquote().run() },
   { icon: '</>', label: '代码块', desc: '代码片段', action: (editor: any) => editor.chain().focus().toggleCodeBlock().run() },
   { icon: '—', label: '分割线', desc: '水平分割', action: (editor: any) => editor.chain().focus().setHorizontalRule().run() },
+  { icon: '\u{1F5BC}', label: '图片', desc: '上传图片', action: (editor: any) => triggerFileUpload(editor, 'image/*', 'image') },
+  { icon: '\u{1F3AC}', label: '视频', desc: '上传视频', action: (editor: any) => triggerFileUpload(editor, 'video/*', 'video') },
 ]
 
 function SlashMenu({ items, selectedIndex, onSelect }: { items: typeof SLASH_COMMANDS; selectedIndex: number; onSelect: (i: number) => void }) {
@@ -121,6 +167,8 @@ export default function InkwellEditor({ content, onUpdate, editable = true }: Ed
       TaskItem.configure({ nested: true }),
       Link.configure({ openOnClick: true }),
       CodeBlockLowlight.configure({ lowlight }),
+      Image.configure({ allowBase64: false, inline: false }),
+      Video,
     ],
     content,
     editable,
@@ -147,6 +195,38 @@ export default function InkwellEditor({ content, onUpdate, editable = true }: Ed
             event.preventDefault()
             closeSlash()
             return true
+          }
+        }
+        return false
+      },
+      handleDrop: (view: any, event: DragEvent) => {
+        const files = event.dataTransfer?.files
+        if (!files || files.length === 0) return false
+        const file = files[0]
+        if (file.type.startsWith('image/')) {
+          event.preventDefault()
+          uploadAndInsert(view.state.editor || (editor as any), file, 'image')
+          return true
+        }
+        if (file.type.startsWith('video/')) {
+          event.preventDefault()
+          uploadAndInsert(view.state.editor || (editor as any), file, 'video')
+          return true
+        }
+        return false
+      },
+      handlePaste: (_view: any, event: ClipboardEvent) => {
+        const items = event.clipboardData?.items
+        if (!items) return false
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i]
+          if (item.type.startsWith('image/')) {
+            const file = item.getAsFile()
+            if (file && editor) {
+              event.preventDefault()
+              uploadAndInsert(editor, file, 'image')
+              return true
+            }
           }
         }
         return false
