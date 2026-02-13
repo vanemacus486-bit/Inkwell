@@ -8,13 +8,14 @@ datasource db {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  username  String   @unique
+  id        Int       @id @default(autoincrement())
+  username  String    @unique
   password  String
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
   notes     Note[]
   folders   Folder[]
   tags      Tag[]
+  comments  Comment[]
 }
 
 model Folder {
@@ -41,19 +42,21 @@ model Tag {
 }
 
 model Note {
-  id        Int       @id @default(autoincrement())
-  title     String    @default("")
-  content   String    @default("")
-  pinned    Boolean   @default(false)
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  deletedAt DateTime?
-  user      User      @relation(fields: [userId], references: [id])
-  userId    Int
-  folder    Folder?   @relation(fields: [folderId], references: [id])
-  folderId  Int?
-  tags      Tag[]
-  versions  NoteVersion[]
+  id           Int           @id @default(autoincrement())
+  title        String        @default("")
+  content      String        @default("")
+  pinned       Boolean       @default(false)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  deletedAt    DateTime?
+  lockPassword String?
+  user         User          @relation(fields: [userId], references: [id])
+  userId       Int
+  folder       Folder?       @relation(fields: [folderId], references: [id])
+  folderId     Int?
+  tags         Tag[]
+  versions     NoteVersion[]
+  comments     Comment[]
 }
 
 model NoteVersion {
@@ -63,4 +66,14 @@ model NoteVersion {
   createdAt DateTime @default(now())
   note      Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
   noteId    Int
+}
+
+model Comment {
+  id        Int      @id @default(autoincrement())
+  content   String
+  createdAt DateTime @default(now())
+  note      Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  noteId    Int
+  user      User     @relation(fields: [userId], references: [id])
+  userId    Int
 }

@@ -20,6 +20,21 @@ export interface Note {
   tags: Tag[]
   createdAt: string
   updatedAt: string
+  locked?: boolean
+}
+
+export interface Comment {
+  id: number
+  content: string
+  createdAt: string
+  noteId: number
+}
+
+export interface Stats {
+  heatmap: Record<string, number>
+  streak: number
+  totalNotes: number
+  totalChars: number
 }
 
 export interface AuthResponse {

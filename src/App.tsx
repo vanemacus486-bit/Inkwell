@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import type { Note, Folder, Tag } from './types'
-import { api, auth, folderApi, tagApi } from './api'
+import type { Note, Folder, Tag, Comment, Stats } from './types'
+import { api, auth, folderApi, tagApi, commentApi } from './api'
 import Login from './Login'
 import InkwellEditor from './Editor'
 import CommandPalette from './CommandPalette'
@@ -16,7 +16,6 @@ function formatDate(ts: string): string {
 
 function truncate(str: string, len = 50): string {
   if (!str) return '空白笔记'
-  // Strip HTML tags for preview
   const text = str.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ')
   const line = text.split('\n').find(l => l.trim()) || ''
   return line.length > len ? line.slice(0, len) + '…' : line
@@ -55,6 +54,7 @@ function TagBadge({ tag, small, onClick, removable, onRemove }: { tag: Tag; smal
 }
 
 function NoteCard({ note, active, onClick }: { note: Note; active: boolean; onClick: () => void }) {
+  const isLocked = note.locked
   return (
     <button onClick={onClick} style={{
       display: 'block', width: '100%', textAlign: 'left', padding: '12px 18px', border: 'none',
@@ -67,14 +67,15 @@ function NoteCard({ note, active, onClick }: { note: Note; active: boolean; onCl
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
         {note.pinned && <span style={{ fontSize: 9, color: 'var(--accent)' }}>●</span>}
+        {isLocked && <span style={{ fontSize: 11 }}>🔒</span>}
         <span style={{ fontSize: 13, fontWeight: 600, color: active ? 'var(--text-primary)' : 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: "'Noto Serif SC', serif" }}>
           {note.title || '无标题'}
         </span>
       </div>
       <div style={{ fontSize: 11.5, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: "'IBM Plex Mono', monospace" }}>
-        {truncate(note.content)}
+        {isLocked ? '此笔记已加锁' : truncate(note.content)}
       </div>
-      {note.tags.length > 0 && (
+      {!isLocked && note.tags.length > 0 && (
         <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
           {note.tags.slice(0, 3).map(t => <TagBadge key={t.id} tag={t} small />)}
           {note.tags.length > 3 && <span style={{ fontSize: 10, color: 'var(--text-faint)' }}>+{note.tags.length - 3}</span>}
@@ -137,7 +138,6 @@ function exportNoteAsMarkdown(note: Note, folders: Folder[]) {
 }
 
 function exportAllAsMarkdown(notes: Note[], folders: Folder[]) {
-  // 简易方式：合并所有笔记为一个 Markdown 文件
   const sections = notes.map(note => {
     const folder = folders.find(f => f.id === note.folderId)
     const tags = note.tags.map(t => `#${t.name}`).join(' ')
@@ -145,6 +145,119 @@ function exportAllAsMarkdown(notes: Note[], folders: Folder[]) {
     return `# ${note.title || '无标题'}\n\n> 📁 ${folder?.name || '未分类'} ${tags ? '| ' + tags : ''} | ${new Date(note.updatedAt).toLocaleDateString('zh-CN')}\n\n${md}`
   })
   downloadFile('Inkwell-全部笔记.md', sections.join('\n\n---\n\n'))
+}
+
+// 热力图组件
+function HeatmapModal({ stats, onClose }: { stats: Stats; onClose: () => void }) {
+  const today = new Date()
+  const days: { date: string; count: number }[] = []
+
+  for (let i = 364; i >= 0; i--) {
+    const d = new Date(today)
+    d.setDate(d.getDate() - i)
+    const key = d.toISOString().slice(0, 10)
+    days.push({ date: key, count: stats.heatmap[key] || 0 })
+  }
+
+  // 对齐到周日开始
+  const firstDay = new Date(days[0].date).getDay()
+  const paddedDays = Array(firstDay).fill(null).concat(days)
+
+  const weeks: (typeof days[0] | null)[][] = []
+  for (let i = 0; i < paddedDays.length; i += 7) {
+    weeks.push(paddedDays.slice(i, i + 7))
+  }
+
+  const getColor = (count: number) => {
+    if (count === 0) return 'var(--heatmap-empty)'
+    if (count === 1) return 'var(--heatmap-low)'
+    if (count <= 3) return 'var(--heatmap-mid)'
+    if (count <= 5) return 'var(--heatmap-high)'
+    return 'var(--heatmap-max)'
+  }
+
+  const months = ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月']
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 780, width: '90vw' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <h2 style={{ margin: 0, fontSize: 18, fontFamily: "'Noto Serif SC', serif", fontWeight: 700 }}>活跃记录</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-ghost)', cursor: 'pointer', fontSize: 18 }}>×</button>
+        </div>
+
+        {/* 统计摘要 */}
+        <div style={{ display: 'flex', gap: 32, marginBottom: 24, flexWrap: 'wrap' }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--accent)' }}>{stats.streak}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>连续记录天数</div>
+          </div>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--accent)' }}>{stats.totalNotes}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>总笔记数</div>
+          </div>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--accent)' }}>{stats.totalChars.toLocaleString()}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>总字数</div>
+          </div>
+        </div>
+
+        {/* 月份标签 */}
+        <div style={{ display: 'flex', gap: 0, marginBottom: 4, paddingLeft: 28, fontSize: 10, color: 'var(--text-faint)' }}>
+          {(() => {
+            const labels: { month: string; col: number }[] = []
+            let lastMonth = -1
+            weeks.forEach((week, wi) => {
+              const cell = week.find(d => d !== null)
+              if (cell) {
+                const m = new Date(cell.date).getMonth()
+                if (m !== lastMonth) {
+                  labels.push({ month: months[m], col: wi })
+                  lastMonth = m
+                }
+              }
+            })
+            return labels.map((l, i) => (
+              <span key={i} style={{ position: 'absolute', left: 28 + l.col * 14 }}>{l.month}</span>
+            ))
+          })()}
+        </div>
+
+        {/* 热力图网格 */}
+        <div style={{ display: 'flex', gap: 2, marginTop: 20, overflowX: 'auto', position: 'relative' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginRight: 4, paddingTop: 0 }}>
+            {['日', '一', '二', '三', '四', '五', '六'].map((d, i) => (
+              <div key={i} style={{ height: 12, width: 20, fontSize: 9, color: 'var(--text-faint)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 4 }}>
+                {i % 2 === 1 ? d : ''}
+              </div>
+            ))}
+          </div>
+          {weeks.map((week, wi) => (
+            <div key={wi} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {Array.from({ length: 7 }, (_, di) => {
+                const cell = week[di]
+                return (
+                  <div key={di} title={cell ? `${cell.date}: ${cell.count} 篇笔记` : ''} style={{
+                    width: 12, height: 12, borderRadius: 2,
+                    background: cell ? getColor(cell.count) : 'transparent',
+                  }} />
+                )
+              })}
+            </div>
+          ))}
+        </div>
+
+        {/* 图例 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 12, justifyContent: 'flex-end' }}>
+          <span style={{ fontSize: 10, color: 'var(--text-faint)', marginRight: 4 }}>少</span>
+          {[0, 1, 2, 4, 6].map(c => (
+            <div key={c} style={{ width: 12, height: 12, borderRadius: 2, background: getColor(c) }} />
+          ))}
+          <span style={{ fontSize: 10, color: 'var(--text-faint)', marginLeft: 4 }}>多</span>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // 版本历史类型
@@ -177,11 +290,46 @@ function NotesApp({ username, onLogout }: { username: string; onLogout: () => vo
   const [showVersions, setShowVersions] = useState(false)
   const [versions, setVersions] = useState<NoteVersion[]>([])
   const [previewVersion, setPreviewVersion] = useState<NoteVersion | null>(null)
+
+  // 评论功能状态
+  const [showComments, setShowComments] = useState(false)
+  const [comments, setComments] = useState<Comment[]>([])
+  const [newComment, setNewComment] = useState('')
+
+  // 活跃热力图状态
+  const [showHeatmap, setShowHeatmap] = useState(false)
+  const [stats, setStats] = useState<Stats | null>(null)
+
+  // 随机回顾状态
+  const [showReview, setShowReview] = useState(false)
+  const [reviewNote, setReviewNote] = useState<Note | null>(null)
+  const [reviewMode, setReviewMode] = useState<'random' | 'thisday'>('random')
+  const [reviewNotes, setReviewNotes] = useState<Note[]>([])
+
+  // 笔记加锁状态
+  const [unlockedNotes, setUnlockedNotes] = useState<Set<number>>(new Set())
+  const [showLockDialog, setShowLockDialog] = useState<'lock' | 'unlock' | 'remove' | null>(null)
+  const [lockPassword, setLockPassword] = useState('')
+  const [lockError, setLockError] = useState('')
+
+  // 离线状态
+  const [isOnline, setIsOnline] = useState(navigator.onLine)
+
   const titleRef = useRef<HTMLInputElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const active = notes.find(n => n.id === activeId) ?? null
+  const isActiveUnlocked = active ? (!active.locked || unlockedNotes.has(active.id)) : false
+
+  // 离线状态监听
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true)
+    const handleOffline = () => setIsOnline(false)
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+    return () => { window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline) }
+  }, [])
 
   useEffect(() => {
     Promise.all([api.list(), folderApi.list(), tagApi.list()]).then(([n, f, t]) => {
@@ -332,6 +480,93 @@ function NotesApp({ username, onLogout }: { username: string; onLogout: () => vo
     setShowVersions(false)
   }
 
+  // 评论功能
+  const loadComments = useCallback(async (noteId: number) => {
+    try {
+      const c = await commentApi.list(noteId)
+      setComments(c)
+    } catch {}
+  }, [])
+
+  const addComment = async () => {
+    if (!active || !newComment.trim()) return
+    const c = await commentApi.create(active.id, newComment.trim())
+    setComments(prev => [...prev, c])
+    setNewComment('')
+  }
+
+  const removeComment = async (id: number) => {
+    await commentApi.remove(id)
+    setComments(prev => prev.filter(c => c.id !== id))
+  }
+
+  // 随机回顾功能
+  const loadRandomReview = useCallback(async (mode: 'random' | 'thisday' = 'random') => {
+    setReviewMode(mode)
+    const result = await api.random(mode)
+    if (mode === 'thisday' && Array.isArray(result)) {
+      setReviewNotes(result)
+      setReviewNote(result[0] || null)
+    } else if (result && !Array.isArray(result)) {
+      setReviewNote(result)
+      setReviewNotes([])
+    } else {
+      setReviewNote(null)
+      setReviewNotes([])
+    }
+    setShowReview(true)
+  }, [])
+
+  // 热力图功能
+  const loadStats = useCallback(async () => {
+    const s = await api.stats()
+    setStats(s)
+    setShowHeatmap(true)
+  }, [])
+
+  // 笔记加锁功能
+  const handleLockNote = async () => {
+    if (!active || !lockPassword) return
+    setLockError('')
+    try {
+      await api.lock(active.id, lockPassword)
+      setNotes(prev => prev.map(n => n.id === active.id ? { ...n, locked: true, content: '' } : n))
+      setShowLockDialog(null)
+      setLockPassword('')
+    } catch (e: any) {
+      setLockError(e.message)
+    }
+  }
+
+  const handleUnlockNote = async (noteId?: number) => {
+    const id = noteId || active?.id
+    if (!id || !lockPassword) return
+    setLockError('')
+    try {
+      const fullNote = await api.unlock(id, lockPassword)
+      setNotes(prev => prev.map(n => n.id === id ? { ...fullNote, locked: true } : n))
+      setUnlockedNotes(prev => new Set(prev).add(id))
+      setShowLockDialog(null)
+      setLockPassword('')
+    } catch (e: any) {
+      setLockError(e.message)
+    }
+  }
+
+  const handleRemoveLock = async () => {
+    if (!active || !lockPassword) return
+    setLockError('')
+    try {
+      await api.removeLock(active.id, lockPassword)
+      setNotes(prev => prev.map(n => n.id === active.id ? { ...n, locked: false } : n))
+      setUnlockedNotes(prev => { const s = new Set(prev); s.delete(active.id); return s })
+      setShowLockDialog(null)
+      setLockPassword('')
+    } catch (e: any) {
+      setLockError(e.message)
+    }
+  }
+
   // 主题切换
   const handleToggleTheme = useCallback(() => {
     toggleTheme()
@@ -348,6 +583,9 @@ function NotesApp({ username, onLogout }: { username: string; onLogout: () => vo
     { id: 'export-all', icon: '📦', label: '导出全部笔记', group: '导出', action: () => exportAllAsMarkdown(notes, folders) },
     { id: 'trash', icon: '🗑', label: '打开回收站', group: '操作', action: () => { setShowTrash(true); loadTrash() } },
     { id: 'versions', icon: '🕐', label: '查看版本历史', group: '操作', action: () => { if (active) { setShowVersions(true); loadVersions(active.id) } } },
+    { id: 'random-review', icon: '🎲', label: '随机回顾', group: '操作', action: () => loadRandomReview('random') },
+    { id: 'thisday-review', icon: '📅', label: '历史上的今天', group: '操作', action: () => loadRandomReview('thisday') },
+    { id: 'heatmap', icon: '📊', label: '查看活跃记录', group: '操作', action: loadStats },
     { id: 'pin', icon: '📌', label: active?.pinned ? '取消置顶' : '置顶笔记', group: '操作', action: togglePin },
     { id: 'delete', icon: '✕', label: '删除笔记', group: '操作', shortcut: 'Ctrl+D', action: deleteNote },
     { id: 'logout', icon: '🚪', label: '退出登录', group: '操作', action: onLogout },
@@ -384,6 +622,132 @@ function NotesApp({ username, onLogout }: { username: string; onLogout: () => vo
         onSelectTag={id => setActiveTagFilter(id)}
         commands={paletteCommands}
       />
+
+      {/* 热力图模态框 */}
+      {showHeatmap && stats && <HeatmapModal stats={stats} onClose={() => setShowHeatmap(false)} />}
+
+      {/* 随机回顾模态框 */}
+      {showReview && (
+        <div className="modal-overlay" onClick={() => setShowReview(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 640, width: '90vw', maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h2 style={{ margin: 0, fontSize: 18, fontFamily: "'Noto Serif SC', serif", fontWeight: 700 }}>
+                {reviewMode === 'random' ? '随机回顾' : '历史上的今天'}
+              </h2>
+              <button onClick={() => setShowReview(false)} style={{ background: 'none', border: 'none', color: 'var(--text-ghost)', cursor: 'pointer', fontSize: 18 }}>×</button>
+            </div>
+
+            {/* 历史上的今天 - 笔记列表 */}
+            {reviewMode === 'thisday' && reviewNotes.length > 1 && (
+              <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+                {reviewNotes.map((n, i) => (
+                  <button key={n.id} onClick={() => setReviewNote(n)} style={{
+                    padding: '4px 12px', borderRadius: 6, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
+                    background: reviewNote?.id === n.id ? 'var(--accent-bg-strong)' : 'var(--bg-hover)',
+                    color: reviewNote?.id === n.id ? 'var(--accent)' : 'var(--text-tertiary)',
+                    border: '1px solid var(--border-input)',
+                  }}>
+                    {n.title || `笔记 ${i + 1}`}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {reviewNote ? (
+              <div style={{ flex: 1, overflowY: 'auto' }}>
+                <h3 style={{ fontSize: 20, fontFamily: "'Noto Serif SC', serif", margin: '0 0 8px', fontWeight: 700 }}>{reviewNote.title || '无标题'}</h3>
+                <div style={{ fontSize: 11, color: 'var(--text-faint)', marginBottom: 12 }}>
+                  {new Date(reviewNote.createdAt).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}
+                  {reviewNote.tags?.length > 0 && (
+                    <span style={{ marginLeft: 8 }}>{reviewNote.tags.map(t => t.name).join(', ')}</span>
+                  )}
+                </div>
+                {reviewNote.locked ? (
+                  <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-faint)' }}>
+                    <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
+                    <div>此笔记已加锁，无法预览</div>
+                  </div>
+                ) : (
+                  <div className="tiptap-editor" dangerouslySetInnerHTML={{ __html: reviewNote.content }} style={{ fontSize: 14 }} />
+                )}
+              </div>
+            ) : (
+              <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-faint)' }}>
+                {reviewMode === 'thisday' ? '历史上的今天没有笔记' : '暂无笔记可回顾'}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end', borderTop: '1px solid var(--border-light)', paddingTop: 12 }}>
+              <button onClick={() => loadRandomReview('random')} style={{
+                padding: '6px 16px', borderRadius: 6, border: '1px solid var(--border-input)', background: 'transparent',
+                color: 'var(--text-tertiary)', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+              }}>
+                🎲 换一篇
+              </button>
+              <button onClick={() => loadRandomReview('thisday')} style={{
+                padding: '6px 16px', borderRadius: 6, border: '1px solid var(--border-input)', background: 'transparent',
+                color: 'var(--text-tertiary)', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+              }}>
+                📅 历史上的今天
+              </button>
+              {reviewNote && !reviewNote.locked && (
+                <button onClick={() => { setActiveId(reviewNote.id); setShowReview(false) }} style={{
+                  padding: '6px 16px', borderRadius: 6, border: 'none', background: 'var(--accent)',
+                  color: '#fff', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+                }}>
+                  去编辑
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 加锁弹窗 */}
+      {showLockDialog && (
+        <div className="modal-overlay" onClick={() => { setShowLockDialog(null); setLockPassword(''); setLockError('') }}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 360 }}>
+            <h3 style={{ margin: '0 0 16px', fontSize: 16, fontFamily: "'Noto Serif SC', serif" }}>
+              {showLockDialog === 'lock' ? '设置密码锁' : showLockDialog === 'unlock' ? '输入密码解锁' : '移除密码锁'}
+            </h3>
+            <input
+              type="password"
+              value={lockPassword}
+              onChange={e => setLockPassword(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  if (showLockDialog === 'lock') handleLockNote()
+                  else if (showLockDialog === 'unlock') handleUnlockNote()
+                  else handleRemoveLock()
+                }
+              }}
+              placeholder={showLockDialog === 'lock' ? '设置密码（至少4位）' : '输入密码'}
+              autoFocus
+              style={{
+                width: '100%', padding: '10px 14px', border: '1px solid var(--border-input-strong)', borderRadius: 8,
+                fontSize: 14, outline: 'none', fontFamily: 'inherit', background: 'var(--bg-primary)', color: 'var(--text-primary)', boxSizing: 'border-box',
+              }}
+            />
+            {lockError && <div style={{ color: '#d44', fontSize: 12, marginTop: 8 }}>{lockError}</div>}
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button onClick={() => { setShowLockDialog(null); setLockPassword(''); setLockError('') }} style={{
+                padding: '6px 16px', borderRadius: 6, border: '1px solid var(--border-input)', background: 'transparent',
+                color: 'var(--text-tertiary)', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+              }}>取消</button>
+              <button onClick={() => {
+                if (showLockDialog === 'lock') handleLockNote()
+                else if (showLockDialog === 'unlock') handleUnlockNote()
+                else handleRemoveLock()
+              }} style={{
+                padding: '6px 16px', borderRadius: 6, border: 'none', background: 'var(--accent)',
+                color: '#fff', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+              }}>
+                {showLockDialog === 'lock' ? '加锁' : showLockDialog === 'unlock' ? '解锁' : '移除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 侧栏 */}
       <aside style={{ width: sidebarOpen ? 280 : 0, minWidth: sidebarOpen ? 280 : 0, height: '100%', background: 'var(--bg-secondary)', borderRight: sidebarOpen ? '1px solid var(--border)' : 'none', display: 'flex', flexDirection: 'column', transition: 'all 0.3s ease', overflow: 'hidden' }}>
@@ -462,11 +826,19 @@ function NotesApp({ username, onLogout }: { username: string; onLogout: () => vo
           )}
         </div>
 
-        {/* 回收站入口 */}
+        {/* 工具入口 */}
         <div style={{ padding: '6px 14px 0' }}>
           <button onClick={() => { setShowTrash(true); loadTrash() }}
             style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 10px', border: 'none', borderRadius: 6, background: showTrash ? 'var(--bg-active)' : 'transparent', color: 'var(--text-muted)', fontSize: 11.5, cursor: 'pointer', fontFamily: 'inherit' }}>
             🗑 回收站
+          </button>
+          <button onClick={() => loadRandomReview('random')}
+            style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 10px', border: 'none', borderRadius: 6, background: 'transparent', color: 'var(--text-muted)', fontSize: 11.5, cursor: 'pointer', fontFamily: 'inherit' }}>
+            🎲 随机回顾
+          </button>
+          <button onClick={loadStats}
+            style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 10px', border: 'none', borderRadius: 6, background: 'transparent', color: 'var(--text-muted)', fontSize: 11.5, cursor: 'pointer', fontFamily: 'inherit' }}>
+            📊 活跃记录
           </button>
         </div>
 
@@ -474,7 +846,6 @@ function NotesApp({ username, onLogout }: { username: string; onLogout: () => vo
         <button onClick={createNote} style={{ margin: '8px 14px 4px', padding: '8px 0', border: '1px dashed var(--accent-border)', borderRadius: 8, background: 'transparent', color: 'var(--accent)', fontSize: 12, fontFamily: "'Noto Serif SC', serif", cursor: 'pointer', fontWeight: 500 }}>+ 新建笔记</button>
         <div style={{ flex: 1, overflowY: 'auto', paddingTop: 2 }}>
           {showTrash ? (
-            // 回收站列表
             trashedNotes.length === 0 ? (
               <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-faint)', fontSize: 11 }}>回收站为空</div>
             ) : (
@@ -490,7 +861,6 @@ function NotesApp({ username, onLogout }: { username: string; onLogout: () => vo
               ))
             )
           ) : (
-            // 正常笔记列表
             <>
               {filtered.length === 0 && <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-faint)', fontSize: 11 }}>
                 {search ? '无匹配结果' : (
@@ -505,7 +875,10 @@ function NotesApp({ username, onLogout }: { username: string; onLogout: () => vo
             </>
           )}
         </div>
-        <div style={{ padding: '10px 18px', borderTop: '1px solid var(--border-light)', fontSize: 9.5, color: 'var(--text-ghost)', textAlign: 'center', fontStyle: 'italic' }}>Inkwell v0.5</div>
+        <div style={{ padding: '10px 18px', borderTop: '1px solid var(--border-light)', fontSize: 9.5, color: 'var(--text-ghost)', textAlign: 'center', fontStyle: 'italic' }}>
+          Inkwell v0.6
+          {!isOnline && <span style={{ marginLeft: 8, color: 'var(--accent)' }}> · 离线模式</span>}
+        </div>
       </aside>
 
       {/* 编辑区 */}
@@ -515,6 +888,7 @@ function NotesApp({ username, onLogout }: { username: string; onLogout: () => vo
             <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: 'var(--text-muted)', padding: '4px 6px' }}>{sidebarOpen ? '◧' : '▤'}</button>
             <button onClick={() => setCmdPaletteOpen(true)} title="命令面板 (Ctrl+K)" style={{ background: 'none', border: '1px solid var(--border-input)', borderRadius: 6, cursor: 'pointer', fontSize: 11, color: 'var(--text-faint)', padding: '4px 12px', fontFamily: 'inherit' }}>⌕ Ctrl+K</button>
             {saving && <span style={{ fontSize: 10, color: 'var(--text-faint)' }}>保存中…</span>}
+            {!isOnline && <span style={{ fontSize: 10, color: 'var(--accent)', background: 'var(--accent-bg)', padding: '2px 8px', borderRadius: 4 }}>离线</span>}
           </div>
           {active && !showTrash && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -548,9 +922,26 @@ function NotesApp({ username, onLogout }: { username: string; onLogout: () => vo
                 style={{ background: showVersions ? 'var(--accent-bg-strong)' : 'none', border: '1px solid var(--border-input)', borderRadius: 6, padding: '3px 10px', fontSize: 11, color: 'var(--text-tertiary)', cursor: 'pointer', fontFamily: 'inherit' }}>
                 🕐 历史
               </button>
+              <button onClick={() => { setShowComments(v => !v); if (!showComments && active) loadComments(active.id) }} title="评论"
+                style={{ background: showComments ? 'var(--accent-bg-strong)' : 'none', border: '1px solid var(--border-input)', borderRadius: 6, padding: '3px 10px', fontSize: 11, color: 'var(--text-tertiary)', cursor: 'pointer', fontFamily: 'inherit' }}>
+                💬 评论
+              </button>
               <button onClick={() => active && exportNoteAsMarkdown(active, folders)} title="导出 Markdown"
                 style={{ background: 'none', border: '1px solid var(--border-input)', borderRadius: 6, padding: '3px 10px', fontSize: 11, color: 'var(--text-tertiary)', cursor: 'pointer', fontFamily: 'inherit' }}>
                 📄 导出
+              </button>
+              {/* 加锁按钮 */}
+              <button onClick={() => {
+                if (active.locked && isActiveUnlocked) {
+                  setShowLockDialog('remove')
+                } else if (active.locked) {
+                  setShowLockDialog('unlock')
+                } else {
+                  setShowLockDialog('lock')
+                }
+              }}
+                style={{ background: active.locked ? 'var(--accent-bg-strong)' : 'none', border: '1px solid var(--border-input)', borderRadius: 6, padding: '3px 10px', fontSize: 11, color: active.locked ? 'var(--accent)' : 'var(--text-tertiary)', cursor: 'pointer', fontFamily: 'inherit' }}>
+                {active.locked ? '🔒 已加锁' : '🔓 加锁'}
               </button>
               <button onClick={togglePin} style={{ background: active.pinned ? 'var(--accent-bg-strong)' : 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: active.pinned ? 'var(--accent)' : 'var(--text-faint)', padding: '4px 8px', borderRadius: 6 }}>{active.pinned ? '◉ 置顶' : '○ 置顶'}</button>
               <button onClick={deleteNote} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: 'var(--text-ghost)', padding: '4px 8px', borderRadius: 6 }}>删除</button>
@@ -562,37 +953,64 @@ function NotesApp({ username, onLogout }: { username: string; onLogout: () => vo
           {/* 编辑主区域 */}
           <div style={{ flex: 1, overflow: 'auto' }}>
             {active && !showTrash ? (
-              <div style={{ display: 'flex', justifyContent: 'center' }} onClick={() => setShowTagPicker(false)}>
-                <div style={{ width: '100%', maxWidth: 720, padding: '40px 32px 120px' }}>
-                  <input ref={titleRef} value={active.title} onChange={e => updateNote('title', e.target.value)} placeholder="标题"
-                    style={{ width: '100%', border: 'none', outline: 'none', fontSize: 28, fontWeight: 700, fontFamily: "'Noto Serif SC', serif", color: 'var(--text-primary)', background: 'transparent', lineHeight: 1.3, padding: 0, marginBottom: 6 }} />
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-                    <span style={{ fontSize: 11, color: 'var(--text-faint)', fontFamily: "'IBM Plex Mono', monospace" }}>
-                      {new Date(active.createdAt).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })} · {charCount} 字
-                    </span>
-                    {active.tags.map(t => <TagBadge key={t.id} tag={t} removable onRemove={() => toggleTag(t.id)} />)}
-                  </div>
-                  <div style={{ height: 1, background: `linear-gradient(90deg, var(--accent), transparent)`, opacity: 0.3, marginBottom: 28 }} />
-
-                  {previewVersion ? (
-                    <div>
-                      <div style={{ padding: '8px 14px', marginBottom: 16, borderRadius: 8, background: 'var(--accent-bg)', fontSize: 12, color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span>预览版本: {new Date(previewVersion.createdAt).toLocaleString('zh-CN')}</span>
-                        <div style={{ display: 'flex', gap: 8 }}>
-                          <button onClick={() => restoreVersion(previewVersion)} style={{ background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 4, padding: '3px 12px', fontSize: 11, cursor: 'pointer' }}>恢复此版本</button>
-                          <button onClick={() => setPreviewVersion(null)} style={{ background: 'none', color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 4, padding: '3px 12px', fontSize: 11, cursor: 'pointer' }}>取消</button>
-                        </div>
-                      </div>
-                      <div className="tiptap-editor" dangerouslySetInnerHTML={{ __html: previewVersion.content }} />
-                    </div>
-                  ) : (
-                    <InkwellEditor
-                      content={active.content}
-                      onUpdate={html => updateNote('content', html)}
+              active.locked && !isActiveUnlocked ? (
+                /* 锁屏界面 */
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', color: 'var(--text-ghost)', height: '100%' }}>
+                  <div style={{ fontSize: 64, marginBottom: 16, opacity: 0.3 }}>🔒</div>
+                  <div style={{ fontSize: 16, color: 'var(--text-muted)', marginBottom: 8, fontFamily: "'Noto Serif SC', serif" }}>此笔记已加锁</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 20 }}>输入密码后即可查看和编辑</div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      type="password"
+                      value={lockPassword}
+                      onChange={e => setLockPassword(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') handleUnlockNote() }}
+                      placeholder="输入密码"
+                      style={{
+                        padding: '10px 16px', border: '1px solid var(--border-input-strong)', borderRadius: 8,
+                        fontSize: 14, outline: 'none', fontFamily: 'inherit', background: 'var(--bg-primary)', color: 'var(--text-primary)', width: 220,
+                      }}
                     />
-                  )}
+                    <button onClick={() => handleUnlockNote()} style={{
+                      padding: '10px 20px', borderRadius: 8, border: 'none', background: 'var(--accent)',
+                      color: '#fff', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit',
+                    }}>解锁</button>
+                  </div>
+                  {lockError && <div style={{ color: '#d44', fontSize: 12, marginTop: 10 }}>{lockError}</div>}
                 </div>
-              </div>
+              ) : (
+                <div style={{ display: 'flex', justifyContent: 'center' }} onClick={() => setShowTagPicker(false)}>
+                  <div style={{ width: '100%', maxWidth: 720, padding: '40px 32px 120px' }}>
+                    <input ref={titleRef} value={active.title} onChange={e => updateNote('title', e.target.value)} placeholder="标题"
+                      style={{ width: '100%', border: 'none', outline: 'none', fontSize: 28, fontWeight: 700, fontFamily: "'Noto Serif SC', serif", color: 'var(--text-primary)', background: 'transparent', lineHeight: 1.3, padding: 0, marginBottom: 6 }} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                      <span style={{ fontSize: 11, color: 'var(--text-faint)', fontFamily: "'IBM Plex Mono', monospace" }}>
+                        {new Date(active.createdAt).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })} · {charCount} 字
+                      </span>
+                      {active.tags.map(t => <TagBadge key={t.id} tag={t} removable onRemove={() => toggleTag(t.id)} />)}
+                    </div>
+                    <div style={{ height: 1, background: `linear-gradient(90deg, var(--accent), transparent)`, opacity: 0.3, marginBottom: 28 }} />
+
+                    {previewVersion ? (
+                      <div>
+                        <div style={{ padding: '8px 14px', marginBottom: 16, borderRadius: 8, background: 'var(--accent-bg)', fontSize: 12, color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <span>预览版本: {new Date(previewVersion.createdAt).toLocaleString('zh-CN')}</span>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <button onClick={() => restoreVersion(previewVersion)} style={{ background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 4, padding: '3px 12px', fontSize: 11, cursor: 'pointer' }}>恢复此版本</button>
+                            <button onClick={() => setPreviewVersion(null)} style={{ background: 'none', color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 4, padding: '3px 12px', fontSize: 11, cursor: 'pointer' }}>取消</button>
+                          </div>
+                        </div>
+                        <div className="tiptap-editor" dangerouslySetInnerHTML={{ __html: previewVersion.content }} />
+                      </div>
+                    ) : (
+                      <InkwellEditor
+                        content={active.content}
+                        onUpdate={html => updateNote('content', html)}
+                      />
+                    )}
+                  </div>
+                </div>
+              )
             ) : showTrash ? (
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', color: 'var(--text-ghost)' }}>
                 <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.3 }}>🗑</div>
@@ -634,6 +1052,48 @@ function NotesApp({ username, onLogout }: { username: string; onLogout: () => vo
                     </div>
                   ))
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* 评论侧栏 */}
+          {showComments && active && (
+            <div className="version-panel" style={{ animation: 'slideIn 0.2s ease' }}>
+              <div className="version-panel-header">
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', fontFamily: "'Noto Serif SC', serif" }}>评论 ({comments.length})</span>
+                <button onClick={() => setShowComments(false)} style={{ background: 'none', border: 'none', color: 'var(--text-ghost)', cursor: 'pointer', fontSize: 14 }}>×</button>
+              </div>
+              <div style={{ flex: 1, overflowY: 'auto' }}>
+                {comments.length === 0 ? (
+                  <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-faint)', fontSize: 11 }}>暂无评论</div>
+                ) : (
+                  comments.map(c => (
+                    <div key={c.id} className="version-item" style={{ position: 'relative' }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5, wordBreak: 'break-word' }}>{c.content}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 6, fontFamily: "'IBM Plex Mono', monospace", display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>{new Date(c.createdAt).toLocaleString('zh-CN')}</span>
+                        <button onClick={() => removeComment(c.id)} style={{ background: 'none', border: 'none', color: 'var(--text-ghost)', cursor: 'pointer', fontSize: 10, padding: '2px 4px' }}>删除</button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+              <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border-light)' }}>
+                <textarea
+                  value={newComment}
+                  onChange={e => setNewComment(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addComment() } }}
+                  placeholder="写下你的想法…"
+                  style={{
+                    width: '100%', padding: '8px 10px', border: '1px solid var(--border-input)', borderRadius: 6,
+                    background: 'var(--bg-primary)', fontSize: 11.5, color: 'var(--text-primary)', outline: 'none',
+                    fontFamily: 'inherit', resize: 'none', height: 60, boxSizing: 'border-box',
+                  }}
+                />
+                <button onClick={addComment} style={{
+                  marginTop: 6, width: '100%', padding: '6px 0', borderRadius: 6, border: 'none',
+                  background: 'var(--accent)', color: '#fff', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
+                }}>发送</button>
               </div>
             </div>
           )}

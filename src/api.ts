@@ -1,4 +1,4 @@
-import type { Note, Folder, Tag, AuthResponse } from './types'
+import type { Note, Folder, Tag, Comment, Stats, AuthResponse } from './types'
 
 const BASE = '/api'
 
@@ -12,6 +12,11 @@ function authHeaders(): Record<string, string> {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }
+}
+
+function authHeadersRaw(): Record<string, string> {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
 export const auth = {
@@ -102,5 +107,63 @@ export const api = {
       body: JSON.stringify({ tagIds }),
     })
     return res.json()
+  },
+  async random(mode: 'random' | 'thisday' = 'random'): Promise<Note | Note[] | null> {
+    const res = await fetch(`${BASE}/notes/random?mode=${mode}`, { headers: authHeaders() })
+    return res.json()
+  },
+  async stats(): Promise<Stats> {
+    const res = await fetch(`${BASE}/notes/stats`, { headers: authHeaders() })
+    return res.json()
+  },
+  async lock(id: number, password: string): Promise<void> {
+    const res = await fetch(`${BASE}/notes/${id}/lock`, {
+      method: 'POST', headers: authHeaders(),
+      body: JSON.stringify({ password }),
+    })
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error) }
+  },
+  async unlock(id: number, password: string): Promise<Note> {
+    const res = await fetch(`${BASE}/notes/${id}/unlock`, {
+      method: 'POST', headers: authHeaders(),
+      body: JSON.stringify({ password }),
+    })
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error) }
+    return res.json()
+  },
+  async removeLock(id: number, password: string): Promise<void> {
+    const res = await fetch(`${BASE}/notes/${id}/remove-lock`, {
+      method: 'POST', headers: authHeaders(),
+      body: JSON.stringify({ password }),
+    })
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error) }
+  },
+  async upload(file: File): Promise<{ url: string }> {
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await fetch(`${BASE}/upload`, {
+      method: 'POST',
+      headers: authHeadersRaw(),
+      body: formData,
+    })
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error) }
+    return res.json()
+  },
+}
+
+export const commentApi = {
+  async list(noteId: number): Promise<Comment[]> {
+    const res = await fetch(`${BASE}/notes/${noteId}/comments`, { headers: authHeaders() })
+    return res.json()
+  },
+  async create(noteId: number, content: string): Promise<Comment> {
+    const res = await fetch(`${BASE}/notes/${noteId}/comments`, {
+      method: 'POST', headers: authHeaders(),
+      body: JSON.stringify({ content }),
+    })
+    return res.json()
+  },
+  async remove(id: number): Promise<void> {
+    await fetch(`${BASE}/comments/${id}`, { method: 'DELETE', headers: authHeaders() })
   },
 }
